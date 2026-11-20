@@ -1,0 +1,22 @@
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "C4", "SIM"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S104", "S105", "S106", "S113", "S310", "S603", "S607"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+  "config", "health_check", "docker_client", "recovery", "escalation",
+  "incident_logger", "metrics", "guard", "demo_app", "fakes", "cli", "main",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["monitor", "guard", "app/demo-service", "tests/unit"]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["e2e: needs a running docker daemon (set CLOUDRESCUE_E2E=1)"]

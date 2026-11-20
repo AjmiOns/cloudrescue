@@ -1,0 +1,41 @@
+# secrets and credentials
+.env
+*.pem
+*.key
+.aws/
+credentials
+*.tfvars
+!*.tfvars.example
+
+# terraform (state can contain secrets: never commit it). Commit .terraform.lock.hcl.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfplan
+tfplan
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# runtime data
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Windows
+desktop.ini
+Thumbs.db
