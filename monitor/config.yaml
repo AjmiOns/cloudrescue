@@ -1,0 +1,28 @@
+# CloudRescue monitor configuration.
+# Values here are validated at start-up; an invalid file makes the monitor refuse to run.
+
+guard_url: http://docker-guard:2375   # the only path to the Docker API (see guard/guard.py)
+db_path: /data/incidents.db
+metrics_port: 8001
+
+targets:
+  - name: demo-service
+    container: demo-service            # must also be in the docker-guard allowlist
+    url: http://demo-service:8000/health
+    interval_s: 5                      # time between health checks
+    timeout_s: 2                       # a check slower than this counts as a failure
+    failure_threshold: 3               # consecutive failures before we act (avoids flapping)
+    expected_status: 200
+
+recovery:
+  max_restarts: 3        # restarts allowed per window ...
+  window_s: 600          # ... of this many seconds; beyond that we escalate instead
+  cooldown_s: 60         # minimum gap between two restarts of the same target
+  stop_timeout_s: 10     # grace period before Docker kills the container
+  verify_timeout_s: 30   # how long we wait for health after a restart
+  verify_interval_s: 2
+
+escalation:
+  ec2_reboot:
+    enabled: false       # level 2: reboot the VM via the EC2 API (see docs/security.md first)
+    cooldown_s: 1800
