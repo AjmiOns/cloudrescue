@@ -1,0 +1,44 @@
+# Alert rules are evaluated by Prometheus and visible in its UI and in Grafana.
+# Add Alertmanager (not included) to route them to e-mail / Slack / PagerDuty.
+groups:
+  - name: cloudrescue
+    rules:
+      # Who watches the watchdog? If the monitor itself disappears, nothing heals anything.
+      - alert: MonitorDown
+        expr: up{job="cloudrescue-monitor"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "CloudRescue monitor is not reporting"
+          description: "No metrics from the monitor for 1 minute. Automatic recovery is not running."
+
+      - alert: ServiceDown
+        expr: cloudrescue_service_up == 0
+        for: 30s
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.target }} is failing health checks"
+          description: "The monitor should restart it automatically; this alert tells you it is happening."
+
+      - alert: RestartLoop
+        expr: sum by (target) (increase(cloudrescue_recovery_attempts_total[10m])) >= 3
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.target }} restarted 3+ times in 10 minutes"
+          description: "The service keeps failing after restarts. Investigate the root cause, not the symptom."
+
+      - alert: RecoveryEscalated
+        expr: cloudrescue_state{state="escalated"} == 1
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.target }} could not be recovered automatically"
+          description: "The restart budget is exhausted. Manual intervention required."
+
+      - alert: SlowRecovery
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, target) (rate(cloudrescue_recovery_duration_seconds_bucket[1h]))) > 60
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 time-to-recover for {{ $labels.target }} is above 60 s"

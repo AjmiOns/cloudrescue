@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directories: ["/monitor", "/app/demo-service"]
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directories: ["/monitor", "/app/demo-service", "/guard"]
+    schedule: { interval: weekly }
+  - package-ecosystem: terraform
+    directory: /infrastructure/terraform
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
