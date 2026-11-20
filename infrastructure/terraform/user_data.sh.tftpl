@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# CloudRescue bootstrap, rendered by Terraform and run once by cloud-init as root.
+# NOTE: this is a Terraform template: a literal shell "dollar-brace" must be written with a doubled
+# dollar sign, so this script deliberately avoids brace expansion.
+set -euo pipefail
+exec > >(tee -a /var/log/cloudrescue-bootstrap.log) 2>&1
+export DEBIAN_FRONTEND=noninteractive
+
+echo "[bootstrap] base packages"
+apt-get update -y
+apt-get install -y ca-certificates curl git gnupg openssl unattended-upgrades fail2ban
+
+echo "[bootstrap] SSH hardening (key-only, no root)"
+cat > /etc/ssh/sshd_config.d/99-cloudrescue.conf <<'SSHD'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+X11Forwarding no
+MaxAuthTries 3
+SSHD
+systemctl reload ssh || systemctl reload sshd || true
+systemctl enable --now fail2ban
+
+echo "[bootstrap] Docker Engine"
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+apt-get update -y
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+cat > /etc/docker/daemon.json <<'JSON'
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" },
+  "no-new-privileges": true,
+  "live-restore": true
+}
+JSON
+systemctl restart docker
+systemctl enable docker
+
+echo "[bootstrap] fetching CloudRescue"
+git clone --depth 1 --branch "${repo_ref}" "${repo_url}" /opt/cloudrescue
+cd /opt/cloudrescue
+
+echo "[bootstrap] generating secrets on the host (never stored in Terraform state)"
+umask 077
+gen() { openssl rand -hex 24; }
+cat > /opt/cloudrescue/.env <<ENVFILE
+CHAOS_TOKEN=$(gen)
+GUARD_TOKEN=$(gen)
+GRAFANA_ADMIN_PASSWORD=$(gen)
+DOCKER_GID=$(getent group docker | cut -d: -f3)
+ALLOWED_CONTAINERS=demo-service
+GRAFANA_BIND=${grafana_bind}
+COMPOSE_PROFILES=host-metrics
+MONITOR_WITH_AWS=${enable_l2_reboot}
+ESCALATION_EC2_REBOOT=${enable_l2_reboot}
+ENVFILE
+chmod 600 /opt/cloudrescue/.env
+
+echo "[bootstrap] building images"
+docker compose build
+
+echo "[bootstrap] systemd unit: the stack comes back after every reboot or Learner Lab restart"
+cat > /etc/systemd/system/cloudrescue.service <<'UNIT'
+[Unit]
+Description=CloudRescue stack (docker compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/cloudrescue
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now cloudrescue.service
+
+echo "[bootstrap] done"

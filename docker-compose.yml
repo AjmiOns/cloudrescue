@@ -1,0 +1,158 @@
+# CloudRescue local / single-VM stack.
+#   make init   -> generates .env with random secrets
+#   make up     -> builds and starts everything
+#
+# Networks
+#   cloudrescue-net  application + observability traffic
+#   control          INTERNAL network shared only by the monitor and docker-guard, so a
+#                    compromised demo-service cannot even reach the component that holds docker.sock.
+
+name: cloudrescue
+
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  demo-service:
+    <<: *hardening
+    build: ./app/demo-service
+    container_name: demo-service
+    # "no": recovery is the monitor's job. A Docker-level restart policy would silently hide
+    # failures from CloudRescue. After a VM reboot, systemd runs `docker compose up -d`.
+    restart: "no"
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      CHAOS_TOKEN: ${CHAOS_TOKEN:?run `make init` to create .env}
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [cloudrescue-net]
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 100
+
+  monitor:
+    <<: *hardening
+    build:
+      context: ./monitor
+      args:
+        WITH_AWS: ${MONITOR_WITH_AWS:-false}
+    container_name: monitor
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      CONFIG_PATH: /app/config.yaml
+      GUARD_TOKEN: ${GUARD_TOKEN:?run `make init` to create .env}
+      ESCALATION_EC2_REBOOT: ${ESCALATION_EC2_REBOOT:-false}
+    volumes:
+      - ./monitor/config.yaml:/app/config.yaml:ro
+      - incident-data:/data
+    networks: [cloudrescue-net, control]
+    depends_on: [docker-guard, demo-service]
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 100
+
+  docker-guard:
+    <<: *hardening
+    build: ./guard
+    container_name: docker-guard
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    # Runs as an unprivileged user that is only granted the docker *group* to open the socket.
+    group_add: ["${DOCKER_GID:?run `make init` to create .env}"]
+    environment:
+      # This allowlist is the security boundary. It is deliberately separate from monitor/config.yaml
+      # so the monitor cannot widen its own privileges.
+      ALLOWED_CONTAINERS: ${ALLOWED_CONTAINERS:-demo-service}
+      GUARD_TOKEN: ${GUARD_TOKEN:?run `make init` to create .env}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [control]
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 50
+
+  prometheus:
+    <<: *hardening
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"   # never published beyond localhost; use an SSH tunnel
+    networks: [cloudrescue-net]
+    mem_limit: 512m
+    pids_limit: 200
+
+  grafana:
+    <<: *hardening
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?run `make init` to create .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_BIND:-127.0.0.1}:3000:3000"
+    networks: [cloudrescue-net]
+    depends_on: [prometheus]
+    mem_limit: 384m
+    pids_limit: 200
+
+  # --- optional host/container metrics: docker compose --profile host-metrics up -d ----------
+  node-exporter:
+    <<: *hardening
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    profiles: [host-metrics]
+    restart: unless-stopped
+    command: ["--path.rootfs=/host"]
+    volumes:
+      - /:/host:ro,rslave
+    networks: [cloudrescue-net]
+    mem_limit: 64m
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    profiles: [host-metrics]
+    restart: unless-stopped
+    # cAdvisor needs broad read-only host mounts; that is why it is opt-in.
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks: [cloudrescue-net]
+    mem_limit: 128m
+
+networks:
+  cloudrescue-net:
+    driver: bridge
+  control:
+    driver: bridge
+    internal: true
+
+volumes:
+  incident-data:
+  prometheus-data:
+  grafana-data:
