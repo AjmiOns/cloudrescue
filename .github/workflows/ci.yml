@@ -42,7 +42,7 @@ jobs:
       - name: Build images
         run: docker compose build
       - name: Lint Dockerfiles
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: monitor/Dockerfile
           failure-threshold: error
